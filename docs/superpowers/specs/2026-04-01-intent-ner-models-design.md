@@ -22,7 +22,7 @@ Scope: Replace TF‑IDF + cosine intent matching with a fine-tuned model, and re
 
 ## Current baseline (for reference)
 
-- Intent detection: `nlu/intent.py` implements TF‑IDF vectors + centroid per intent, cosine similarity at runtime.
+- Intent detection: `nlu/intent.py` implements TF‑IDF vectors + centroid per intent, cosine similarity at runtime. Runtime entrypoint is `IntentDetector.detect(text, synonym_map, normalize_fn)`. Note: current `IntentDetector.__init__` includes an extra `intent_keyword_backoff` argument, while `NLPPipeline` currently constructs `IntentDetector(self.intent_samples, self.intent_threshold)`; the migration will normalize this by introducing an explicit intent engine interface and updating `NLPPipeline` to use it.
 - Vietnamese preprocessing: `nlu/preprocess.py` uses `underthesea.word_tokenize` when available.
 - NER: `nlu/entities.py` optionally uses `underthesea.ner`; entities also extracted via patterns and dictionary phrase matching.
 
@@ -41,14 +41,26 @@ User text
   └─ EntityExtractor.extract(text)  -> patterns + dictionary + transformer NER
 ```
 
+### Runtime interfaces (to preserve pipeline contract)
+
+To keep `NLPPipeline.analyze()` stable and avoid leaking ML framework details into orchestration, define narrow runtime interfaces:
+
+- `IntentEngine.detect(text: str) -> tuple[str, float]`
+- `NerEngine.extract(text: str) -> list[dict[str, str]]` where each dict includes `label`, `text`, `source`
+
+`NLPPipeline.analyze()` remains:
+
+- returns `{"intent": <str>, "score": <float>, "entities": <list>}`
+- applies `intent_threshold` to emit `"fallback"` for low-confidence intent predictions
+
 ### Module boundaries
 
 - `nlu/intent_model/` (new)
   - Training script(s) + model loading utilities
-  - Runtime `IntentClassifier` (drop-in replacement for `IntentDetector` usage in `NLPPipeline`)
+  - Runtime `IntentClassifier` implementing `IntentEngine`
 - `nlu/entities.py` (update)
   - Keep pattern + dictionary logic intact
-  - Replace `_extract_by_ner()` implementation with Transformer NER pipeline
+  - Replace the module-level `_extract_by_ner(text)` implementation with a pluggable `TransformerNerEngine` used by `_extract_by_ner`
 - `nlu/preprocess.py` (update)
   - Remove reliance on `underthesea` for intent flow
   - Keep `normalize_text()` and synonym mapping helper(s)
@@ -118,6 +130,13 @@ Loading behavior:
 - Backend loads model on startup; warmup optional.
 - Device selection: GPU when present; otherwise CPU (still functional, slower).
 
+Artifact management (decision):
+
+- Do **not** commit large model weights to git.
+- Use a **pinned model ID + pinned revision** for reproducible downloads.
+- On first run (or as an explicit build step), download/cache into a local directory (e.g., `models_cache/`).
+- Support fully offline deployments by allowing `INTENT_MODEL_PATH` / `NER_MODEL_PATH` to point at a pre-provisioned directory.
+
 ### Performance targets (informal)
 
 - Inference: < ~50ms per request on a modest GPU for single-sentence classification (excluding NER).
@@ -172,6 +191,17 @@ Add configuration surface (via `config.py` / env vars) for:
 - Intent threshold (already present)
 - Batch size / max length (optional)
 
+Feature flags and precedence:
+
+- `NLU_INTENT_ENGINE=tfidf|transformer` (selection of intent implementation)
+- `NLU_NER_ENGINE=underthesea|transformer|off` (selection of NER implementation)
+- Precedence: explicit environment variables > `config.py` defaults
+
+Default policy (initial rollout):
+
+- Dev: prefer `transformer` engines when models are available.
+- Prod: keep `tfidf` intent engine until validated; allow switching via env var without code changes.
+
 ## Error handling & fallbacks
 
 - If model load fails:
@@ -191,6 +221,12 @@ Add configuration surface (via `config.py` / env vars) for:
 - Non-determinism guard:
   - For unit tests, mock model inference outputs rather than depending on downloaded weights.
 
+Evaluation & threshold calibration:
+
+- Offline eval on a held-out split for intent classification (accuracy/F1 + confusion pairs).
+- Calibrate `intent_threshold` using PR/ROC-style analysis to reduce wrong-intent rate while maintaining an acceptable fallback rate.
+- Maintain a small “golden set” (e.g., 50–200 representative utterances) to prevent regressions across model updates.
+
 ## Rollout / migration plan (high level)
 
 - Phase 1: Introduce new modules + feature-flag the classifier/NER (default on in dev).
@@ -199,11 +235,14 @@ Add configuration surface (via `config.py` / env vars) for:
 
 ## Open questions (tracked for implementation plan)
 
-- Exact model selection:
-  - Which PhoBERT checkpoint (or alternative) for intent?
-  - Which Vietnamese NER checkpoint for NER?
-- Storage:
-  - Do we commit model artifacts to git, or download on first run / cache locally?
-- Deployment:
-  - Target OS/driver constraints for GPU runtime in production.
+Model selection criteria (acceptance checklist):
+
+- Vietnamese-first, permissive license, available via `transformers`
+- Pinned revision for reproducibility
+- Throughput/latency target stated (including NER)
+- NER label set documented (BIO scheme) and a mapping policy decided (keep generic labels vs map to internal labels)
+
+Deployment constraints:
+
+- Target OS/driver constraints for GPU runtime in production (CUDA/PyTorch compatibility, minimum VRAM, CPU-only fallback behavior).
 
