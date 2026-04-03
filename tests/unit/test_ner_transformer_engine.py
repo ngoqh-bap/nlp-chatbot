@@ -50,6 +50,8 @@ def test_ner_skips_when_over_nlu_ner_max_chars(monkeypatch: pytest.MonkeyPatch) 
 
 @pytest.mark.unit
 def test_transformer_ner_merge_forward_mocked(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
     monkeypatch.setenv("NLU_DEVICE", "cpu")
     monkeypatch.delenv("NLU_NER_MAX_CHARS", raising=False)
     import config

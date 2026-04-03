@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Sequence, Tuple
+
+_logger = logging.getLogger(__name__)
 
 from config import (
     get_entity_budget_ms,
@@ -139,4 +142,5 @@ class TransformerNerEngine:
             ents = offsets_to_spans(text, char_offsets, tags)
             return [e for e in ents if e["end"] <= processed_len]
         except Exception:
+            _logger.warning("nlu_ner_forward_failed", exc_info=True)
             return []

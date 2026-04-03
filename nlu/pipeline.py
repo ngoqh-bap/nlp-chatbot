@@ -207,7 +207,8 @@ class NLPPipeline:
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         text_len = len(text) if isinstance(text, str) else 0
         _logger.info(
-            "nlu_pipeline intent_mode=%s entity_mode=%s text_len=%s elapsed_ms=%.2f",
+            "nlu_pipeline component=pipeline intent_mode=%s entity_mode=%s "
+            "text_len=%s elapsed_ms=%.2f",
             self._intent_engine_mode,
             self._entity_engine_mode,
             text_len,

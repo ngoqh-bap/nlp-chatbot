@@ -22,6 +22,8 @@ def test_decide_intent_small_margin():
 
 @pytest.mark.unit
 def test_transformer_intent_engine_forward_mocked(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
     monkeypatch.setenv("NLU_DEVICE", "cpu")
     import torch
 
