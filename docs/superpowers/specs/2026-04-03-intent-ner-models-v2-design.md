@@ -2,14 +2,14 @@
 
 **Feature Branch**: `001-intent-ner-models`  
 **Date**: 2026-04-03  
-**Scope**: Replace TF‑IDF + cosine intent matching and `underthesea` tokenization/NER with model-based engines, and upgrade the context processing system for maximum efficiency while preserving the NLP contract.
+**Scope**: Replace TF‑IDF + cosine intent matching with a transformer intent engine; add optional transformer NER alongside existing pattern/dictionary extraction; keep deterministic preprocessing. Extend the existing context shaping layer (`ContextProcessor` in `nlu/context.py`) where needed for multi-turn efficiency while preserving the NLP contract.
 
 ## Goals / Non-goals
 
 ### Goals
 
 - Replace legacy intent detection (TF‑IDF centroid cosine) with a **transformer classifier** that returns calibrated probabilities suitable for the required fallback semantics.
-- Replace `underthesea` usage in preprocessing and NER with **model-based** components (GPU-accelerated where available), while keeping a deterministic fallback path.
+- Add **model-based** intent and optional NER (GPU-accelerated where available). Baseline preprocessing is already deterministic (`nlu/preprocess.py`); baseline entities are patterns/dictionaries with optional transformer NER as an add-on, not a replacement for rules.
 - Preserve the public NLP schema and semantics:
   - `NLPPipeline.analyze(text) -> {"intent": str, "score": number, "entities": list}`
   - `score` is **top-1 intent probability** in `[0.0, 1.0]`
@@ -25,9 +25,9 @@
 
 ## Current state (baseline)
 
-- **Intent**: `nlu/intent.py` implements TF‑IDF vectors per intent sample, centroid per intent, and cosine similarity at runtime.
-- **Preprocessing**: `nlu/preprocess.py` normalizes text and uses `underthesea.word_tokenize` when available.
-- **Entities**: `nlu/entities.py` extracts entities via patterns + dictionary phrases and optionally uses `underthesea.ner`.
+- **Intent**: `nlu/intent.py` implements legacy TF‑IDF + softmax-over-centroid similarities with `T`/`M`-style fallback; a transformer intent engine is planned but not yet the default path.
+- **Preprocessing**: `nlu/preprocess.py` uses deterministic Unicode normalization + whitespace tokenization (no standalone ML segmentation model).
+- **Entities**: `nlu/entities.py` uses patterns + dictionary phrase matching with span indices; optional transformer NER is planned.
 - **Context**: `services/nlp_service.py` uses an in-memory `ContextStore` keyed by `session_id` with a history limit; stored fields include `last_intent`, `last_entities`, and `conversation_history`.
 
 ## Proposed architecture (Approach A)
@@ -36,7 +36,7 @@ Introduce explicit, pluggable engines and a context shaping layer.
 
 ### Components
 
-- **ContextProcessor** (new): converts `(message, current_context)` into bounded model input and structured context features.
+- **ContextProcessor** (existing in `nlu/context.py`, used by `NLPPipeline.analyze_with_context`): converts `(message, current_context)` into bounded `model_input_text` (summary + last k turns + current message) with deterministic char budget; **extensions** in this design include structured sticky memory (Tier 1) and aligning all transformer intent paths with the same bounding rules.
 - **IntentEngine** interface:
   - `LegacyTfidfIntentEngine` (existing logic)
   - `TransformerIntentEngine` (new, model-based)
@@ -48,36 +48,56 @@ Introduce explicit, pluggable engines and a context shaping layer.
 ### Data flow (per request)
 
 1. **Context shaping**:
-   - Read `current_context` (session-scoped, already stored by the service layer)
-   - Build a bounded `model_input_text` for the current message using:
-     - a compact “session summary” string (optional, maintained incrementally)
-     - last \(k\) turns of dialogue (bounded by max turns and/or max chars)
-     - the current user message
-   - Also extract structured “sticky” context features (e.g., last major, year, method) from stored entities.
+  - Read `current_context` (session-scoped, already stored by the service layer)
+  - Build a bounded `model_input_text` for the current message using:
+    - a compact “session summary” string (optional, maintained incrementally)
+    - last k turns of dialogue (bounded by max turns and/or max chars)
+    - the current user message
+  - Also extract structured “sticky” context features (e.g., last major, year, method) from stored entities.
 2. **Intent inference** (selected engine):
-   - Transformer engine returns per-intent probabilities via `softmax(logits)`
-   - Compute `top1`, `top2`, apply fallback rule:
-     - fallback if `top1 < T` **or** `(top1 - top2) < M`
-   - Apply inference time budget; on timeout/error/artifact load failure return:
-     - `intent="fallback"`, `score=0.0`
+  - Transformer engine returns per-intent probabilities via `softmax(logits)`
+  - Compute `top1`, `top2`, apply fallback rule:
+    - fallback if `top1 < T` **or** `(top1 - top2) < M`
+  - Apply inference time budget; on timeout/error/artifact load failure return:
+    - `intent="fallback"`, `score=0.0`
 3. **Entity extraction** (selected engine):
-   - Deterministic extraction always available (patterns/dictionaries)
-   - Transformer NER returns span entities with offsets; merge with deterministic outputs
-   - Apply inference time budget; on timeout/error/artifact load failure fall back to deterministic-only
+  - Deterministic extraction always available (patterns/dictionaries)
+  - Transformer NER returns span entities with offsets; merge with deterministic outputs
+  - Apply inference time budget; on timeout/error/artifact load failure fall back to deterministic-only
 4. **Return** `{"intent": intent, "score": score, "entities": entities}` unchanged.
 
 ## Model choices
 
+### Approved stack (2026-04-03) — GPU-first (e.g. RTX 5060)
+
+This project uses **Approach A**: separate intent classifier + separate NER model, both **Vietnamese-capable encoder models**, with **deterministic preprocessing** (no standalone “preprocessing model”). Training may use GPU; production target is **GPU inference on a local RTX 5060-class card** with CPU fallback acceptable but not the primary SLO.
+
+
+| Phase             | Model role                 | Recommended base                                                                                                                                 | Runtime API                                                                        | Notes                                                                                                                                           |
+| ----------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Preprocessing     | None (deterministic)       | N/A                                                                                                                                              | `normalize_text` + tokenizer from HF models only where needed                      | Avoid extra segmentation models; encoders handle subwords.                                                                                      |
+| Intent            | Multi-class classification | **PhoBERT-family** encoder (e.g. `vinai/phobert-base` or `vinai/phobert-large-v2` as capacity/latency trade-off) fine-tuned on `data/intent.csv` | `AutoModelForSequenceClassification` + `AutoTokenizer(use_fast=True)`              | `softmax` → `top1`/`top2`; drives `T`/`M`. Prefer **base** first for latency; scale to **large-v2** if accuracy needs it and P95 budget allows. |
+| Entities (neural) | Token classification (BIO) | **PhoBERT-based** NER checkpoint (community Vietnamese NER on PhoBERT, or fine-tune PhoBERT on your label set)                                   | `AutoModelForTokenClassification` + fast tokenizer + `return_offsets_mapping=True` | Run on **raw user message** only; merge with pattern/dictionary.                                                                                |
+| Entities (rules)  | Deterministic              | N/A                                                                                                                                              | Existing pattern + dictionary extractors                                           | Always-on safety net; `source` is `pattern` / `dictionary`.                                                                                     |
+
+
+**RTX 5060 inference guidance (non-binding defaults for planning):**
+
+- Use **CUDA** (`torch` device `cuda`), **FP16 or BF16** autocast where numerically stable for throughput; FP32 acceptable for debugging.
+- **Batch size 1** for chat latency; keep separate CUDA streams only if measured benefit.
+- **VRAM headroom**: PhoBERT-base + PhoBERT-base NER typically fit comfortably; if both models are resident simultaneously, prefer **smaller checkpoints** or **load one model at a time** (intent then NER) if memory pressure appears—measure on hardware.
+- **Warm-up**: optional one forward pass at process start to stabilize latency.
+
 ### Intent classifier
 
-- HuggingFace `AutoModelForSequenceClassification`
+- HuggingFace `AutoModelForSequenceClassification` with a **PhoBERT** backbone (fine-tuned), unless offline eval shows insufficient quality.
 - Output semantics:
   - logits -> probabilities via `softmax`
   - `score` returned to callers is `top1` probability (not cosine similarity)
 
 ### NER
 
-- HuggingFace `AutoModelForTokenClassification` (BIO tagging)
+- HuggingFace `AutoModelForTokenClassification` (BIO tagging) with a **PhoBERT** backbone (fine-tuned or a compatible pretrained NER head).
 - Span reconstruction:
   - Use a fast tokenizer with `return_offsets_mapping=True` to map token predictions back to character offsets in the original input
   - Produce entities with:
@@ -87,6 +107,7 @@ Introduce explicit, pluggable engines and a context shaping layer.
     - `source="model"`
 
 **Offset contract (required)**:
+
 - `start`/`end` MUST be Unicode code point indices into the **raw current user message text passed to** `NLPPipeline.analyze(text)`.
 - Offsets MUST NOT be relative to any combined `model_input_text` that includes prior turns, summaries, or prefixes (e.g., `"User: "`).
   - To keep offsets correct and implementation simple, `TransformerNerEngine` runs on the **raw current message only** (context is used for intent, not for span extraction).
@@ -104,6 +125,7 @@ Maintain small, structured context fields in `ContextStore`:
 - `sticky_entities`: a compact mapping of important entity types (e.g., major, year, admission method) to the most recent value + timestamp/turn index
 
 Structured memory is:
+
 - cheap to update
 - cheap to read
 - robust when conversation history is truncated
@@ -124,6 +146,7 @@ User: <current message>
 ```
 
 Budget controls:
+
 - `CONTEXT_MAX_CHARS` (or `CONTEXT_MAX_TOKENS`)
 - `HISTORY_LIMIT` (already exists via config; tests expect default 10)
 - `CONTEXT_TURNS_FOR_MODEL` (k)
@@ -152,6 +175,7 @@ Environment/config keys (names indicative; final names should match existing con
 - `CONTEXT_TURNS_FOR_MODEL=<int>`
 
 Rollout strategy:
+
 - default to legacy/deterministic until offline evaluation validates the transformer engines
 - allow independent toggling and instant rollback without code changes
 
@@ -165,6 +189,7 @@ Component-wise degradation rules:
 - Entity engine failures MUST NOT crash intent classification.
 
 Specific behavior:
+
 - **Intent artifact missing/corrupted** or inference error/timeout:
   - return `intent="fallback"`, `score=0.0`
 - **Entity artifact missing/corrupted** or inference error/timeout:
@@ -178,7 +203,7 @@ Specific behavior:
   - If inference succeeds on the truncated text, apply the normal fallback rule (`T`/`M`) and return `score=top1` even when the returned intent is `"fallback"`.
   - Regardless of truncation, still run deterministic entity extraction on the original message text.
   - If intent inference times out/fails, return `intent="fallback"`, `score=0.0`.
- - **Mixed-language / slang / typos / near-ties**: prefer safe fallback by applying `T`/`M` (low top-1 confidence or small top-1/top-2 margin triggers fallback).
+- **Mixed-language / slang / typos / near-ties**: prefer safe fallback by applying `T`/`M` (low top-1 confidence or small top-1/top-2 margin triggers fallback).
 
 ## Observability / logging
 
@@ -203,7 +228,8 @@ Specific behavior:
 
 ## Open questions (to resolve during implementation planning)
 
-- Model artifact locations + loading strategy (local filesystem layout; CPU/GPU device selection).
+- **Exact checkpoint IDs** to pin (intent + NER): choose between `phobert-base` vs `phobert-large-v2` after a short latency/accuracy bake-off on RTX 5060.
+- **Artifact layout**: e.g. `models/intent/<run-id>/` and `models/ner/<run-id>/` with `config.json`, tokenizer, weights; env vars `INTENT_MODEL_PATH` / `NER_MODEL_PATH` (names TBD in `config.py`).
 - Whether to implement `context_summary` as extractive (e.g., last facts) or as a deterministic compression heuristic (to keep tests deterministic and avoid dependency on a summarization model).
-- Exact config key names to align with `config.py`.
+- Exact config key names to align with `config.py` (partially started: engine toggles and budgets).
 
