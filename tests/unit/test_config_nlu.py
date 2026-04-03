@@ -8,6 +8,7 @@ from config import (
     get_nlu_intent_engine,
     get_nlu_device,
     get_nlu_intent_max_chars,
+    get_nlu_ner_max_chars,
     get_nlu_use_autocast,
     get_ner_model_path,
 )
@@ -48,6 +49,11 @@ def test_ner_model_path_alias(monkeypatch):
 def test_nlu_intent_max_chars_default_disabled(monkeypatch):
     monkeypatch.delenv("NLU_INTENT_MAX_CHARS", raising=False)
     assert get_nlu_intent_max_chars() == 0
+
+
+def test_nlu_ner_max_chars_default_disabled(monkeypatch):
+    monkeypatch.delenv("NLU_NER_MAX_CHARS", raising=False)
+    assert get_nlu_ner_max_chars() == 0
 
 
 def test_nlu_device_valid(monkeypatch):

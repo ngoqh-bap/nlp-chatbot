@@ -16,6 +16,7 @@ CONTEXT_MAX_CHARS_DEFAULT: int = 4000
 CONTEXT_TURNS_FOR_MODEL_DEFAULT: int = 5
 
 NLU_INTENT_MAX_CHARS_DEFAULT: int = 0  # 0 = disabled (no extra cap)
+NLU_NER_MAX_CHARS_DEFAULT: int = 0  # 0 = disabled; else skip neural NER for longer raw text
 
 SERVER_HOST_DEFAULT: str = "0.0.0.0"
 SERVER_PORT_DEFAULT: int = 8000
@@ -140,6 +141,11 @@ def get_ner_model_path() -> str:
 def get_nlu_intent_max_chars() -> int:
     # 0 = disabled
     return int(os.getenv("NLU_INTENT_MAX_CHARS", NLU_INTENT_MAX_CHARS_DEFAULT))
+
+
+def get_nlu_ner_max_chars() -> int:
+    """If > 0 and raw message is longer, skip neural NER (deterministic only)."""
+    return int(os.getenv("NLU_NER_MAX_CHARS", NLU_NER_MAX_CHARS_DEFAULT))
 
 
 def get_nlu_device() -> str:

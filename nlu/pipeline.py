@@ -1,5 +1,7 @@
 import csv
+import logging
 import os
+import time
 from typing import List, Dict, Tuple, Any, Optional
 
 try:
@@ -32,12 +34,17 @@ from config import (
     get_intent_margin_M,
     get_intent_model_path,
     get_intent_threshold,
+    get_nlu_entity_engine,
     get_nlu_intent_engine,
+    get_nlu_intent_max_chars,
+    get_ner_model_path,
 )
 
-from .engines.base import IntentEngine, PlaceholderTransformerIntentEngine
+from .engines.base import IntentEngine, NerEngine, PlaceholderTransformerIntentEngine
 
 DEFAULT_INTENT_THRESHOLD = get_intent_threshold()
+
+_logger = logging.getLogger(__name__)
 
 
 def _normalize_text(text) -> str:
@@ -106,6 +113,17 @@ class NLPPipeline:
             EntityExtractor(self.data_dir, os.path.join(data_dir, "entity.json"), self.syn_map)
             if EntityExtractor is not None else None
         )
+        self._entity_engine_mode = get_nlu_entity_engine()
+        self._ner_engine: Optional[NerEngine] = None
+        if self._entity_engine_mode == "transformer":
+            ner_path = get_ner_model_path()
+            if ner_path and os.path.isdir(ner_path):
+                try:
+                    from .engines.ner_transformer import TransformerNerEngine
+
+                    self._ner_engine = TransformerNerEngine(ner_path)
+                except Exception:
+                    self._ner_engine = None
         self._context_processor: Optional[ContextProcessor] = (
             ContextProcessor(
                 max_chars=get_context_max_chars(),
@@ -135,10 +153,35 @@ class NLPPipeline:
             return "fallback", 0.0
         return self._intent_engine.detect(text, self.syn_map, _normalize_text)
 
+    @staticmethod
+    def _merge_entity_lists(
+        deterministic: List[Dict[str, Any]], neural: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        keys = {(e["label"], e["start"], e["end"]) for e in deterministic}
+        out = list(deterministic)
+        for e in neural:
+            k = (e["label"], e["start"], e["end"])
+            if k in keys:
+                continue
+            keys.add(k)
+            out.append(e)
+        return out
+
     def extract_entities(self, text: str) -> List[Dict[str, Any]]:
-        if self._entity_extractor is None:
+        mode = self._entity_engine_mode
+        if mode == "off":
             return []
-        return self._entity_extractor.extract(text)
+        det = (
+            self._entity_extractor.extract(text)
+            if self._entity_extractor is not None
+            else []
+        )
+        if mode == "deterministic":
+            return det
+        neural: List[Dict[str, Any]] = (
+            self._ner_engine.extract(text) if self._ner_engine is not None else []
+        )
+        return self._merge_entity_lists(det, neural)
 
     def analyze(self, text: str) -> Dict[str, Any]:
         return self.analyze_with_context(text, {})
@@ -146,15 +189,28 @@ class NLPPipeline:
     def analyze_with_context(
         self, text: str, current_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
+        t0 = time.perf_counter()
         ctx = current_context if current_context is not None else {}
         if self._context_processor is not None:
             intent_input = self._context_processor.build_intent_input(text, ctx)
         else:
             intent_input = text
+        cap = get_nlu_intent_max_chars()
+        if cap > 0 and len(intent_input) > cap:
+            intent_input = intent_input[-cap:]
         intent, score = (
             self._intent_engine.detect(intent_input, self.syn_map, _normalize_text)
             if self._intent_engine is not None
             else ("fallback", 0.0)
         )
         entities = self.extract_entities(text)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        text_len = len(text) if isinstance(text, str) else 0
+        _logger.info(
+            "nlu_pipeline intent_mode=%s entity_mode=%s text_len=%s elapsed_ms=%.2f",
+            self._intent_engine_mode,
+            self._entity_engine_mode,
+            text_len,
+            elapsed_ms,
+        )
         return {"intent": intent, "score": score, "entities": entities}
