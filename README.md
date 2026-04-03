@@ -1,297 +1,127 @@
-# HUCE Chatbot - Hệ Thống Chatbot Tuyển Sinh
+# HUCE Chatbot — Admission Q&A (HUCE)
 
-> Chatbot tra cứu thông tin tuyển sinh Đại học Xây dựng Hà Nội với NLP tiếng Việt
+**Tiếng Việt:** Chatbot tra cứu thông tin tuyển sinh Đại học Xây dựng Hà Nội (HUCE), với NLP tiếng Việt và API FastAPI.
 
-## 🎯 Tính Năng
-
-### Tra Cứu Thông Tin
-
-- ✅ Điểm chuẩn các ngành theo năm
-- ✅ Học phí và học bổng
-- ✅ Thông tin ngành học, tổ hợp môn
-- ✅ Phương thức xét tuyển, lịch tuyển sinh
-- ✅ Thông tin liên hệ
-
-### NLP Tiếng Việt
-
-- ✅ Intent detection (legacy TF‑IDF + softmax probabilities; optional `transformers` path planned)
-- ✅ Entity extraction (pattern + dictionary + spans)
-- ✅ Context management (nhớ 10 câu hỏi gần nhất)
-- ✅ Fallback thông minh khi không hiểu
-
-### Bảo Mật
-
-- ✅ Input sanitization (XSS/SQLi)
-- ✅ Rate limiting
-- ✅ Request validation
-- ✅ Error handling
+This repository contains a **FastAPI** backend that routes Vietnamese user messages through an **NLU pipeline** (intent + entities), then answers from curated **CSV** admission data. An optional **Reflex** frontend in `frontend/` talks to the same API.
 
 ---
 
-## 🛠 Công Nghệ
+## Features
 
-### Backend
-
-- **FastAPI** - Web framework
-- **Transformers + PyTorch** - optional model-based NLP
-- **Deterministic tokenization** - Vietnamese text normalization
-- **Pydantic** - Data validation
-- **pytest** - Testing framework
-- **pandas** - CSV processing
-
-### Frontend
-
-- **Reflex** - Python web framework
-- **WebSocket** - Real-time communication
-
-### Data
-
-- **13 CSV files** - Admission data
-- **Caching** - Optimized with mtime checking
+- **Admissions Q&A:** Benchmark scores by major and year, tuition, scholarships, majors, admission methods, timelines, contact info.
+- **NLU**
+  - **Intent:** Legacy TF‑IDF + calibrated softmax scores and threshold/margin fallback; optional **PhoBERT** sequence classifier via `transformers` when `NLU_INTENT_ENGINE=transformer` and a local model directory is set.
+  - **Entities:** Pattern + dictionary extraction with character spans; optional **token-classification NER** on the raw user message when `NLU_ENTITY_ENGINE=transformer`.
+  - **Context:** Session history (bounded), context shaping for multi-turn intent, optional **sticky entity** map for follow-ups.
+- **Safety:** Input sanitization, rate limiting hooks, structured errors.
 
 ---
 
-## 📁 Cấu Trúc Dự Án
+## Tech stack
 
-```
-DATN/
-├── main.py                 # FastAPI application
-├── models.py               # Pydantic models
-├── config.py              # Configuration
-├── constants.py           # Constants
-│
-├── nlu/                   # NLP Pipeline
-│   ├── pipeline.py        # Orchestration
-│   ├── intent.py          # Intent detection
-│   ├── entities.py        # Entity extraction
-│   └── preprocess.py      # Text preprocessing
-│
-├── services/              # Business Logic
-│   ├── nlp_service.py     # NLP facade
-│   ├── csv_service.py     # Data loading
-│   ├── handlers/          # Intent handlers
-│   └── processors/        # Data processors
-│
-├── exceptions/            # Custom Exceptions
-│   ├── nlp_exceptions.py
-│   ├── data_exceptions.py
-│   └── api_exceptions.py
-│
-├── utils/                 # Utilities
-│   └── sanitize.py        # Input sanitization
-│
-├── tests/                 # Test Suite
-│   ├── unit/              # Unit tests (122)
-│   └── integration/       # Integration tests (10)
-│
-├── data/                  # CSV Data
-│   ├── admission_scores.csv
-│   ├── majors.csv
-│   ├── tuition.csv
-│   └── ...
-│
-└── frontend/              # Reflex Frontend
-    └── chatbot/
+| Layer | Stack |
+|-------|--------|
+| API | Python 3.13+, FastAPI, Pydantic v2, Uvicorn |
+| NLU | `nlu/` pipeline; optional `torch` + `transformers` (PhoBERT-class models) |
+| Data | CSV under `data/`, loaded via `services/` |
+| UI (optional) | Reflex (`frontend/`), HTTP/WebSocket to the API |
+| Quality | pytest, ruff |
+
+---
+
+## Repository layout
+
+```text
+nlp-chatbot/
+├── main.py                 # FastAPI app
+├── config.py               # Environment-driven settings
+├── models.py               # Pydantic request/response models
+├── nlu/
+│   ├── pipeline.py         # analyze / analyze_with_context
+│   ├── intent.py           # Legacy intent detector + adapter
+│   ├── entities.py         # Pattern + dictionary entities
+│   ├── context.py          # Bounded context for intent text
+│   └── engines/            # Pluggable intent/NER engines + budgets
+├── services/               # NLP facade, CSV handlers, processors
+├── data/                   # CSV knowledge base
+├── scripts/
+│   └── train_intent_phobert.py   # Optional PhoBERT intent fine-tune
+├── frontend/               # Reflex app (optional)
+├── tests/
+│   ├── unit/
+│   └── integration/
+├── docs/
+│   └── QUICKSTART.md       # Step-by-step local setup
+└── env.example             # Copy to .env
 ```
 
 ---
 
-## 🚀 Bắt Đầu
+## Quickstart
 
-### Yêu Cầu
+**See [docs/QUICKSTART.md](docs/QUICKSTART.md)** for install, `.env`, running the API and Reflex, smoke tests, and optional intent training.
 
-- Python 3.13+
-- uv package manager
-- Git
-
-### Cài Đặt
+Short version:
 
 ```bash
-# 1. Clone repository
-git clone https://github.com/your-org/huce-chatbot.git
-cd huce-chatbot
-
-# 2. Cài đặt dependencies
-pip install uv
 uv sync
-
-# 3. Cấu hình environment (tùy chọn)
 cp env.example .env
-# Chỉnh sửa .env nếu cần
-
-# 4. Chạy tests để verify
-pytest
-
-# 5. Chạy backend
-uvicorn main:app --reload
-
-# 6. Chạy frontend (terminal khác)
-cd frontend
-reflex run
+uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Truy Cập
-
-- **Backend API:** http://localhost:8000
-- **API Docs (Swagger):** http://localhost:8000/docs
-- **Frontend:** http://localhost:3000
+Open http://127.0.0.1:8000/docs for interactive API documentation.
 
 ---
 
-## 🧪 Testing
+## Configuration
 
-### Chạy Tests
+Copy `env.example` to `.env`. Important groups:
+
+- **Server:** `SERVER_HOST`, `SERVER_PORT`, `DEBUG`, `LOG_LEVEL`, CORS.
+- **NLU:** `NLU_INTENT_ENGINE`, `NLU_ENTITY_ENGINE`, `NLU_INTENT_MODEL_DIR`, `NLU_NER_MODEL_DIR`, `NLU_DEVICE`, budgets, `NLU_INTENT_MAX_CHARS`, `NLU_NER_MAX_CHARS`.
+
+Defaults keep **legacy** intent and **deterministic** entities so the API runs without downloading models.
+
+---
+
+## Testing and lint
 
 ```bash
-# Chạy tất cả tests
-pytest
-
-# Chạy với coverage
-pytest --cov=. --cov-report=html
-
-# Chạy tests cụ thể
-pytest tests/unit/
-pytest tests/integration/
+uv run pytest
+uv run ruff check .
 ```
 
 ---
 
-## 📡 API Endpoints
+## API
 
-### 1. Health Check
+Interactive docs: **`GET /docs`** (Swagger UI) when the server is running.
 
-```bash
-GET /
-```
+Typical chat request:
 
-### 2. Chat với NLP
-
-```bash
+```http
 POST /chat/advanced
+Content-Type: application/json
+
 {
   "message": "Điểm chuẩn ngành Kiến trúc?",
-  "session_id": "user_123",
+  "session_id": "user-1",
   "use_context": true
 }
 ```
 
-### 3. Quản Lý Context
-
-```bash
-POST /chat/context
-{
-  "action": "get|set|reset",
-  "session_id": "user_123"
-}
-```
-
-Chi tiết: [API_GUIDE.md](./API_GUIDE.md)
+Response includes `analysis` (`intent`, `score`, `entities`), `response`, and `context`.
 
 ---
 
-## 🔒 Bảo Mật
+## Contributing
 
-### Input Sanitization
-
-- ✅ XSS prevention (HTML escaping)
-- ✅ SQL injection prevention (pattern removal)
-- ✅ Spam detection (multiple heuristics)
-- ✅ Length limits (prevent abuse)
-- ✅ Session validation
-
-### Error Handling
-
-- ✅ 15 custom exception types
-- ✅ Standardized error responses
-- ✅ Request ID tracking
-- ✅ No stack traces in production
+1. Use **Python 3.13+** and run tests with **`uv run pytest`** before pushing.
+2. Follow existing style; **`uv run ruff check .`** should pass.
+3. Prefer focused commits and PRs that describe behavior changes in plain language.
 
 ---
 
-## 📈 Roadmap
+## License
 
-### ✅ Đã Hoàn Thành
-
-- [x] Core NLP pipeline
-- [x] Context management
-- [x] 132 tests với 100% pass rate
-- [x] Exception handling
-- [x] Input sanitization
-- [x] Complete documentation
-
-### 🔄 Đang Phát Triển
-
-- [ ] Rate limiting
-- [ ] Authentication (API key)
-- [ ] Monitoring dashboard
-
-### 📅 Tương Lai
-
-- [ ] Database migration (CSV → PostgreSQL)
-- [ ] Custom NER model training
-- [ ] Personalized responses
-- [ ] Multi-language support
-
----
-
-## 🤝 Đóng Góp
-
-Chúng tôi hoan nghênh mọi đóng góp! Vui lòng đọc:
-
-1. [CONTRIBUTING.md](./CONTRIBUTING.md) - Hướng dẫn đóng góp
-2. [ARCHITECTURE.md](./ARCHITECTURE.md) - Hiểu kiến trúc
-3. [TESTING_GUIDE.md](./TESTING_GUIDE.md) - Viết tests
-
-### Quy Trình
-
-```bash
-# 1. Fork repository
-# 2. Tạo branch
-git checkout -b feature/your-feature
-
-# 3. Code và test
-pytest
-
-# 4. Commit với message rõ ràng
-git commit -m "feat: add new feature"
-
-# 5. Push và tạo PR
-git push origin feature/your-feature
-```
-
-### Tài Nguyên
-
-- **API Docs:** http://localhost:8000/docs (Swagger UI)
-- **GitHub:** [Link to repository]
-- **Wiki:** [Link to wiki]
-
----
-
-## 🌟 Tính Năng Nổi Bật
-
-### 1. Smart Context Management
-
-Tự động hiểu câu hỏi tiếp theo mà không cần nhắc lại ngành học:
-
-```
-User: "Điểm chuẩn ngành CNTT?"
-Bot:  "Điểm chuẩn CNTT là 25.5..."
-
-User: "Còn học phí thế nào?"
-Bot:  "Học phí ngành CNTT là 31 triệu/năm"
-      ↑ Tự động hiểu đang hỏi về CNTT
-```
-
-### 2. Comprehensive Testing
-
-- 132 tests cover all critical paths
-- 100% pass rate maintained
-- Sub-second execution time
-- CI-ready infrastructure
-
-### 3. Production-Ready
-
-- Exception handling cho mọi error case
-- Request ID tracking cho debugging
-- Input sanitization cho security
-- Comprehensive documentation
+Add a `LICENSE` file at the repository root if you redistribute this code; there is no default license in this tree.
