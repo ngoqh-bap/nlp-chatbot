@@ -32,6 +32,10 @@ env/
 .github/
 .vscode/
 .idea/
+.cursor/
+specs/
+.worktrees/
+superpowers/
 *.swp
 *.swo
 *~
