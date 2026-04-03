@@ -17,7 +17,7 @@ from config import get_cors_origins, get_cors_allow_credentials, get_log_level
 from constants import Validation, ErrorMessage, SuccessMessage
 from exceptions import ChatbotException, APIException, NLPException, DataException
 from models import AdvancedChatRequest, ContextRequest, create_success_response
-from services.nlp_service import get_nlp_service
+from services.nlp_service import get_nlp_service, merge_sticky_entities
 
 log_dir = os.path.join(os.path.dirname(__file__), "logs")
 if not os.path.exists(log_dir):
@@ -245,6 +245,9 @@ async def advanced_chat(req: AdvancedChatRequest):
                          e.get('label') in ['TEN_NGANH', 'CHUYEN_NGANH', 'MA_NGANH']]
             new_context[
                 "last_entities"] = old_major + current_entities
+
+        turn = len(new_context.get("conversation_history") or [])
+        merge_sticky_entities(new_context, current_entities, turn=turn)
 
         nlp.set_context(session_id, new_context)
 

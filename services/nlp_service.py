@@ -1,7 +1,36 @@
-from typing import Dict, Any
+from typing import Any, Dict, FrozenSet
 
 from config import get_intent_threshold, get_context_history_limit
 from nlu.pipeline import NLPPipeline
+
+# Entity labels copied into `sticky_entities` for fast multi-turn access (Tier 1 memory).
+STICKY_ENTITY_LABELS: FrozenSet[str] = frozenset(
+    {
+        "TEN_NGANH",
+        "CHUYEN_NGANH",
+        "MA_NGANH",
+        "NAM_HOC",
+        "NAM_TUYEN_SINH",
+        "PHUONG_THUC",
+        "PHUONG_THUC_XET_TUYEN",
+    }
+)
+
+
+def merge_sticky_entities(
+    ctx: Dict[str, Any], entities: list, turn: int
+) -> None:
+    """Update ctx['sticky_entities'] in place from resolved entities for this turn."""
+    sticky: Dict[str, Any] = dict(ctx.get("sticky_entities") or {})
+    for e in entities:
+        lab = e.get("label")
+        if lab not in STICKY_ENTITY_LABELS:
+            continue
+        sticky[str(lab)] = {
+            "text": str(e.get("text") or ""),
+            "turn": int(turn),
+        }
+    ctx["sticky_entities"] = sticky
 
 
 class ContextStore:

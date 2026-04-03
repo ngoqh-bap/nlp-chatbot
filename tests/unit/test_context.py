@@ -5,6 +5,8 @@ Tests the context management logic in the system.
 """
 import pytest
 
+from services.nlp_service import merge_sticky_entities
+
 
 @pytest.mark.unit
 class TestContextManagement:
@@ -86,6 +88,23 @@ class TestContextManagement:
 
         assert ctx1["last_intent"] == "intent_1"
         assert ctx2["last_intent"] == "intent_2"
+
+    def test_merge_sticky_entities_updates_and_preserves(self):
+        ctx: dict = {}
+        merge_sticky_entities(
+            ctx,
+            [{"label": "TEN_NGANH", "text": "Kiến trúc", "start": 0, "end": 1, "source": "pattern"}],
+            turn=1,
+        )
+        assert ctx["sticky_entities"]["TEN_NGANH"]["text"] == "Kiến trúc"
+        assert ctx["sticky_entities"]["TEN_NGANH"]["turn"] == 1
+        merge_sticky_entities(
+            ctx,
+            [{"label": "NAM_HOC", "text": "2024", "start": 0, "end": 1, "source": "pattern"}],
+            turn=2,
+        )
+        assert ctx["sticky_entities"]["TEN_NGANH"]["text"] == "Kiến trúc"
+        assert ctx["sticky_entities"]["NAM_HOC"]["turn"] == 2
 
 
 @pytest.mark.unit
