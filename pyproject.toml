@@ -10,7 +10,7 @@ dependencies = [
     "uvicorn[standard]==0.38.0",
     # Backend - NLP - model inference (intent/NER engines)
     "transformers>=4.45.0",
-    "torch>=2.4.0",
+    "torch>=2.7.0",
     "python-dotenv>=1.0.0",
     # Backend - Utilities - Regex cho text processing
     "regex==2025.11.3",
@@ -47,3 +47,12 @@ select = ["E9", "F63", "F7", "F82"]
 python_version = "3.13"
 ignore_missing_imports = true
 pretty = true
+
+# CUDA wheels (cu128, includes sm_120 for RTX 50). macOS keeps PyPI torch (MPS/CPU).
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }

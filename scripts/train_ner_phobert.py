@@ -1,27 +1,22 @@
 #!/usr/bin/env python3
-"""Fine-tune a PhoBERT sequence classifier from data/intent.csv (utterance, intent columns).
+"""Fine-tune PhoBERT for token classification (BIO NER) from JSON Lines data.
 
-Optimized for **NVIDIA GPUs** when CUDA is available (mixed precision, pinned memory, cudnn benchmark).
+Each input line is a JSON object with word-level ``tokens`` and ``ner_tags`` (see ``data/ner/README.md``).
 
 Example:
-  uv run python scripts/train_intent_phobert.py --out models/intent/run1
+  uv run python scripts/train_ner_phobert.py --data data/ner/train.jsonl --out models/ner/run1
 
-On Windows/Linux, ``uv sync`` / ``uv run`` resolves ``torch`` from the CUDA 12.8 index (see
-``pyproject.toml``). macOS still uses the PyPI ``torch`` wheel.
-
-Defaults can be set in ``.env`` (see env.example, section **Intent training (GPU)**):
-  TRAIN_AMP, TRAIN_BATCH_SIZE, TRAIN_NUM_WORKERS, etc.
-
-Point NLU_INTENT_MODEL_DIR at ``--out`` after training when using NLU_INTENT_ENGINE=transformer.
+Reuses the same ``TRAIN_*`` env defaults as ``train_intent_phobert.py`` where applicable.
+Point ``NLU_NER_MODEL_DIR`` at ``--out`` when using ``NLU_ENTITY_ENGINE=transformer``.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import os
 import random
 import warnings
+from functools import partial
 from pathlib import Path
 
 try:
@@ -34,7 +29,9 @@ except ImportError:
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup
+from transformers import AutoModelForTokenClassification, AutoTokenizer, get_linear_schedule_with_warmup
+
+from nlu.datasets.ner_jsonl import build_label_maps_from_rows, load_ner_jsonl
 
 
 def _env_int(name: str, default: int) -> int:
@@ -56,57 +53,11 @@ def _env_str(name: str, default: str) -> str:
     return v.strip() if v else default
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    v = os.getenv(name)
-    if v is None or v.strip() == "":
-        return default
-    return v.strip().lower() in ("1", "true", "yes", "on")
-
-
 def _set_seed(seed: int) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-
-
-class _IntentRows(Dataset):
-    def __init__(self, texts: list[str], labels: list[str], tokenizer, label2id: dict[str, int], max_len: int):
-        self.texts = texts
-        self.labels = labels
-        self.tokenizer = tokenizer
-        self.label2id = label2id
-        self.max_len = max_len
-
-    def __len__(self) -> int:
-        return len(self.texts)
-
-    def __getitem__(self, i: int) -> dict:
-        enc = self.tokenizer(
-            self.texts[i],
-            truncation=True,
-            max_length=self.max_len,
-            padding="max_length",
-            return_tensors="pt",
-        )
-        item = {k: v.squeeze(0) for k, v in enc.items()}
-        item["labels"] = torch.tensor(self.label2id[self.labels[i]], dtype=torch.long)
-        return item
-
-
-def _load_csv(path: Path) -> tuple[list[str], list[str]]:
-    texts: list[str] = []
-    labels: list[str] = []
-    with path.open(newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            u = (row.get("utterance") or "").strip()
-            intent = (row.get("intent") or "").strip()
-            if u and intent:
-                texts.append(u)
-                labels.append(intent)
-    if not texts:
-        raise SystemExit(f"No rows in {path}")
-    return texts, labels
 
 
 def _resolve_device(explicit: str) -> torch.device:
@@ -117,7 +68,6 @@ def _resolve_device(explicit: str) -> torch.device:
         if not torch.cuda.is_available():
             raise SystemExit("TRAIN_DEVICE=cuda but CUDA is not available.")
         return torch.device("cuda")
-    # auto
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -125,7 +75,6 @@ def _resolve_amp(
     device: torch.device,
     amp_mode: str,
 ) -> tuple[bool, torch.dtype | None, bool]:
-    """Returns (use_autocast, autocast_dtype, use_grad_scaler)."""
     if device.type != "cuda":
         return False, None, False
     m = amp_mode.lower().strip()
@@ -136,14 +85,74 @@ def _resolve_amp(
             return True, torch.bfloat16, False
         print("Warning: TRAIN_AMP=bf16 but BF16 not supported; falling back to fp16 + GradScaler.")
         return True, torch.float16, True
-    # fp16 or default amp on GPU
     return True, torch.float16, True
+
+
+class _NerWordDataset(Dataset):
+    def __init__(
+        self,
+        rows: list[tuple[list[str], list[str]]],
+        tokenizer,
+        label2id: dict[str, int],
+        max_len: int,
+    ) -> None:
+        self.rows = rows
+        self.tokenizer = tokenizer
+        self.label2id = label2id
+        self.max_len = max_len
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, i: int) -> dict:
+        tokens, tags = self.rows[i]
+        enc = self.tokenizer(
+            tokens,
+            is_split_into_words=True,
+            truncation=True,
+            max_length=self.max_len,
+            padding=False,
+            return_tensors=None,
+        )
+        word_ids = enc.word_ids()
+        label_ids: list[int] = []
+        previous_word_idx: int | None = None
+        for word_idx in word_ids:
+            if word_idx is None:
+                label_ids.append(-100)
+            elif word_idx != previous_word_idx:
+                label_ids.append(self.label2id[tags[word_idx]])
+            else:
+                label_ids.append(-100)
+            previous_word_idx = word_idx
+        return {
+            "input_ids": enc["input_ids"],
+            "attention_mask": enc["attention_mask"],
+            "labels": label_ids,
+        }
+
+
+def _collate_ner_batch(batch: list[dict], *, pad_token_id: int) -> dict[str, torch.Tensor]:
+    max_len = max(len(x["input_ids"]) for x in batch)
+    input_ids: list[list[int]] = []
+    attention_mask: list[list[int]] = []
+    labels: list[list[int]] = []
+    for x in batch:
+        pad_n = max_len - len(x["input_ids"])
+        input_ids.append(x["input_ids"] + [pad_token_id] * pad_n)
+        attention_mask.append(x["attention_mask"] + [0] * pad_n)
+        labels.append(x["labels"] + [-100] * pad_n)
+    return {
+        "input_ids": torch.tensor(input_ids, dtype=torch.long),
+        "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+        "labels": torch.tensor(labels, dtype=torch.long),
+    }
 
 
 def main() -> None:
     default_batch = _env_int("TRAIN_BATCH_SIZE", 16 if torch.cuda.is_available() else 8)
-    ap = argparse.ArgumentParser(description="Fine-tune PhoBERT for intent classification (NVIDIA GPU friendly)")
-    ap.add_argument("--data", type=Path, default=Path(_env_str("TRAIN_DATA", "data/intent.csv")))
+    ap = argparse.ArgumentParser(description="Fine-tune PhoBERT for BIO NER (token classification)")
+    ap.add_argument("--data", type=Path, required=True, help="JSON Lines: tokens + ner_tags per line")
     ap.add_argument("--out", type=Path, required=True, help="Directory to save tokenizer + model")
     ap.add_argument("--base", default=_env_str("TRAIN_BASE_MODEL", "vinai/phobert-base"))
     ap.add_argument("--epochs", type=int, default=_env_int("TRAIN_EPOCHS", 5))
@@ -156,15 +165,13 @@ def main() -> None:
         "--device",
         choices=("auto", "cuda", "cpu"),
         default=_env_str("TRAIN_DEVICE", "auto"),
-        help="Inference/training device (default from TRAIN_DEVICE in .env)",
     )
     ap.add_argument(
         "--amp",
         choices=("bf16", "fp16", "none", "auto"),
         default=_env_str("TRAIN_AMP", "auto"),
-        help="Mixed precision: bf16 (Ampere+), fp16, none, auto (bf16 if supported else fp16). Env: TRAIN_AMP",
     )
-    ap.add_argument("--num-workers", type=int, default=_env_int("TRAIN_NUM_WORKERS", 4))
+    ap.add_argument("--num-workers", type=int, default=_env_int("TRAIN_NUM_WORKERS", 0))
     ap.add_argument("--seed", type=int, default=_env_int("TRAIN_SEED", 42))
     ap.add_argument("--max-grad-norm", type=float, default=_env_float("TRAIN_MAX_GRAD_NORM", 1.0))
     args = ap.parse_args()
@@ -187,58 +194,29 @@ def main() -> None:
     if device.type == "cuda" and use_scaler:
         scaler = torch.amp.GradScaler("cuda")
 
-    if device.type == "cuda":
-        idx = torch.cuda.current_device()
-        name = torch.cuda.get_device_name(idx)
-        print(f"Training on CUDA device {idx}: {name}")
-        print(f"AMP: {amp_mode} (autocast={use_autocast}, dtype={amp_dtype}, grad_scaler={use_scaler})")
-        arch_fn = getattr(torch.cuda, "get_arch_list", None)
-        if arch_fn is not None:
-            supported = arch_fn()
-            cap_major, cap_minor = torch.cuda.get_device_capability(idx)
-            # RTX 50 / Blackwell consumer GPUs report sm_120; cu124 and older wheels stop at sm_90.
-            if supported and cap_major == 12 and cap_minor == 0 and "sm_120" not in supported:
-                raise SystemExit(
-                    "This GPU (compute capability 12.0 / sm_120, e.g. RTX 5060) is not supported by this "
-                    f"PyTorch build (has {', '.join(supported)}).\n"
-                    "On Windows/Linux run ``uv lock`` / ``uv sync`` so ``torch`` resolves from the cu128 "
-                    "index in pyproject.toml, or:\n"
-                    "  uv pip install --force-reinstall \"torch>=2.7.0\" "
-                    "--index-url https://download.pytorch.org/whl/cu128"
-                )
-    else:
-        tv = torch.__version__
-        print(f"Training on CPU (PyTorch {tv}).")
-        if "+cpu" in tv.lower() or not torch.version.cuda:
-            print(
-                "This environment has a CPU-only PyTorch wheel — CUDA is disabled even with an NVIDIA GPU.\n"
-                "On Windows/Linux: run ``uv sync`` (this repo pins ``torch`` to the CUDA 12.8 index in "
-                "pyproject.toml), then retry.\n"
-                "Or install manually: uv pip install --force-reinstall \"torch>=2.7.0\" "
-                "--index-url https://download.pytorch.org/whl/cu128\n"
-                "Verify: uv run python -c \"import torch; print(torch.__version__, torch.cuda.is_available())\""
-            )
-        else:
-            print(
-                "CUDA is not available (driver/toolkit mismatch or no GPU?). "
-                "Set TRAIN_DEVICE=cuda after fixing drivers, or see https://pytorch.org."
-            )
-
-    texts, labels = _load_csv(args.data)
-    uniq = sorted(set(labels))
-    label2id = {lab: i for i, lab in enumerate(uniq)}
-    id2label = {i: lab for lab, i in label2id.items()}
+    rows = load_ner_jsonl(args.data)
+    label2id, id2label = build_label_maps_from_rows(rows)
+    n_labels = len(label2id)
 
     tokenizer = AutoTokenizer.from_pretrained(args.base, use_fast=True)
-    model = AutoModelForSequenceClassification.from_pretrained(
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token or tokenizer.unk_token
+    model = AutoModelForTokenClassification.from_pretrained(
         args.base,
-        num_labels=len(uniq),
+        num_labels=n_labels,
         id2label=id2label,
         label2id=label2id,
     )
     model.to(device)
 
-    ds = _IntentRows(texts, labels, tokenizer, label2id, args.max_len)
+    ds = _NerWordDataset(rows, tokenizer, label2id, args.max_len)
+    pad_id = tokenizer.pad_token_id
+    if pad_id is None:
+        pad_id = tokenizer.eos_token_id
+    if pad_id is None:
+        raise SystemExit("Tokenizer has no pad_token_id; set tokenizer.pad_token.")
+    collate_fn = partial(_collate_ner_batch, pad_token_id=int(pad_id))
+
     pin = device.type == "cuda"
     nw = max(0, args.num_workers)
     loader = DataLoader(
@@ -248,6 +226,7 @@ def main() -> None:
         num_workers=nw,
         pin_memory=pin,
         persistent_workers=nw > 0,
+        collate_fn=collate_fn,
     )
 
     steps = len(loader) * args.epochs
@@ -260,7 +239,6 @@ def main() -> None:
     accum = max(1, args.grad_accum)
 
     def _optimizer_step(*, partial_accum: int | None = None) -> None:
-        """If partial_accum is set (1..accum-1), rescale grads from loss/accum so the step matches averaging over `partial_accum` micro-batches."""
         if scaler is not None:
             scaler.unscale_(optim)
         if partial_accum is not None and 0 < partial_accum < accum:
@@ -283,7 +261,6 @@ def main() -> None:
         pending = 0
         for batch in loader:
             batch = {k: v.to(device, non_blocking=pin) for k, v in batch.items()}
-
             if use_autocast and amp_dtype is not None:
                 with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=device.type == "cuda"):
                     out = model(**batch)
@@ -314,7 +291,7 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(args.out)
     tokenizer.save_pretrained(args.out)
-    print(f"Saved to {args.out.resolve()} — set NLU_INTENT_MODEL_DIR to this path.")
+    print(f"Saved to {args.out.resolve()} — set NLU_NER_MODEL_DIR to this path.")
 
 
 if __name__ == "__main__":

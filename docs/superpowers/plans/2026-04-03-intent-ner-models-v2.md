@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use @superpowers:subagent-driven-development (recommended) or @superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship **PhoBERT-based** transformer intent + optional PhoBERT NER behind config flags, with **GPU-first** inference defaults (RTX 5060–class), **local artifact paths**, and contract-safe degradation—without breaking the stable `NLPPipeline` output schema.
+**Goal:** Ship **PhoBERT-based** transformer intent + optional **PhoBERT-family token-classification NER** (community Vietnamese NER checkpoint **or** operator fine-tune on a local BIO label set) behind config flags, with **GPU-first** inference defaults (RTX 5060–class), **local artifact dirs**, and contract-safe degradation—without breaking the stable `NLPPipeline` output schema.
 
-**Architecture:** Keep **Approach A** from `docs/superpowers/specs/2026-04-03-intent-ner-models-v2-design.md`: separate **sequence-classification** intent model and separate **token-classification** NER model; **deterministic** preprocessing; **NER only on the raw user message**; intent may use **context-shaped** text via existing `ContextProcessor`. Legacy TF‑IDF remains the default engine until operators pin artifacts and enable transformers.
+**Architecture:** Keep **Approach A** from `docs/superpowers/specs/2026-04-03-intent-ner-models-v2-design.md`: separate **sequence-classification** intent model and separate **`AutoModelForTokenClassification`** NER head on a **PhoBERT** backbone; **deterministic** preprocessing; **NER only on the raw user message** (`TransformerNerEngine`); intent may use **context-shaped** text via `ContextProcessor`. Deterministic pattern/dictionary extraction stays on and **merges** with neural spans. Legacy TF‑IDF remains the default intent engine until operators pin artifacts and enable transformers.
 
 **Tech Stack:** Python 3.13+, FastAPI, pydantic v2, `transformers` + `torch`, pytest, ruff. Approved encoders: **PhoBERT** (`vinai/phobert-base` or `vinai/phobert-large-v2` for training/bake-off; runtime loads **fine-tuned local dirs**).
 
@@ -24,47 +24,47 @@
 
 ## Scope check
 
-Single subsystem: **NLU engines + pipeline wiring + config + tests**. Optional follow-ups: **training scripts**, **sticky structured memory** (`sticky_entities`), README/ops docs. No Reflex/UI changes in core tasks.
+Single subsystem: **NLU engines + pipeline wiring + config + tests**. Optional follow-ups: **PhoBERT intent + NER training scripts**, **sticky structured memory** (`sticky_entities`), README/ops docs. No Reflex/UI changes in core tasks.
 
-## Repo snapshot — baseline already landed (do not redo)
+## Repo snapshot — baseline already landed (verify; do not redo blindly)
 
-The following are **already implemented** on `main` (verify with tests; only fix if regressions appear):
+The following are **expected on `main`** (run `pytest`; only fix if regressions appear):
 
 | Area | Status | Pointers |
 |------|--------|----------|
-| Legacy intent | TF‑IDF centroids + **softmax** probs + **T/M** fallback | `nlu/intent.py` (`IntentDetector`) |
+| Legacy intent | TF‑IDF centroids + **softmax** probs + **T/M** fallback | `nlu/intent.py` (`IntentDetector`), `LegacyTfidfIntentEngine` |
+| Transformer intent | Local `AutoModelForSequenceClassification` + budgets | `nlu/engines/intent_transformer.py` |
+| Transformer NER | Local `AutoModelForTokenClassification` + BIO → spans, raw `text` only | `nlu/engines/ner_transformer.py` |
+| Pipeline wiring | `NLU_INTENT_ENGINE` / `NLU_ENTITY_ENGINE`, merge neural + deterministic | `nlu/pipeline.py` |
 | Context shaping | `ContextProcessor` bounded + deterministic overflow | `nlu/context.py`, `tests/unit/test_context_processor.py` |
-| Multi-turn intent input | `analyze_with_context` uses `build_intent_input` | `nlu/pipeline.py` |
-| NLU config getters | engines, budgets, context limits | `config.py`, `tests/unit/test_config_nlu.py` |
-| Pipeline edge cases | empty / symbols-only → fallback | `tests/unit/test_pipeline_edge_cases.py` |
-| Dependencies | `transformers`, `torch` in `pyproject.toml` | — |
-| Preprocessing | Deterministic (no `underthesea` in code path) | `nlu/preprocess.py` |
+| NLU config | paths, device, autocast, budgets | `config.py`, `tests/unit/test_config_nlu.py` |
+| Intent training | `scripts/train_intent_phobert.py` | CLI fine-tune on `data/intent.csv` |
 
-**Remaining gap:** There is **no** `nlu/engines/` package, **no** `TransformerIntentEngine` / `TransformerNerEngine`, and **no** `NLU_INTENT_ENGINE=transformer` / `NLU_ENTITY_ENGINE=transformer` wiring in `NLPPipeline`. Config getters exist but are unused for engine selection.
+**Remaining gap (NER, design-aligned):** Runtime code expects a **Hugging Face save dir** at `NLU_NER_MODEL_DIR` with `config.json`, tokenizer, weights, and **`id2label` BIO tags**. The repo **does not** ship that checkpoint. Operators must either (**A**) download a **community PhoBERT-based Vietnamese NER** `TokenClassification` model from the Hub and save it locally, or (**B**) **fine-tune PhoBERT** on a project-specific BIO corpus and point the env var at the export dir—see §**PhoBERT-based NER artifacts** below. Optional: add `scripts/train_ner_phobert.py` mirroring the intent script.
 
 ## File structure (this effort)
 
-**Create:**
+**Expected on `main` (verify; add only if missing):**
 
 | File | Responsibility |
 |------|----------------|
 | `nlu/engines/__init__.py` | Re-export public engine classes |
-| `nlu/engines/base.py` | `Protocol`s / types: `IntentEngine`, `EntityEngine`, shared result types |
-| `nlu/engines/utils.py` | `run_with_budget_ms` (thread pool + timeout; see **Inference budget contract**), safe `torch` device pick (`cuda` vs `cpu`), optional `autocast`, **no log of raw user text** |
-| `nlu/engines/intent_transformer.py` | Load `AutoModelForSequenceClassification` + tokenizer from **local dir**; softmax → `decide_intent(T, M)`; timeouts → `("fallback", 0.0)` |
-| `nlu/engines/ner_transformer.py` | Load `AutoModelForTokenClassification`; run on **raw message**; `return_offsets_mapping=True`; BIO → spans; `source="model"` |
-| `tests/unit/test_intent_transformer_engine.py` | Pure `decide_intent` + mocked model tests (no HF download) |
-| `tests/unit/test_ner_transformer_engine.py` | `offsets_to_spans` / BIO merge tests + mocked forward |
-| `tests/unit/test_pipeline_engines.py` | Engine selection + independence (intent fail does not kill entities) |
-| `tests/unit/test_engine_budget.py` | Timeout vs success for `run_with_budget_ms` |
-| `tests/unit/test_pipeline_long_input.py` | Long message: bounded intent input, full-text entities, `score=top1` on fallback |
+| `nlu/engines/base.py` | `Protocol`s: `IntentEngine`, `NerEngine` |
+| `nlu/engines/utils.py` | `run_with_budget_ms`, device/autocast helpers |
+| `nlu/engines/intent_transformer.py` | PhoBERT **sequence classification** from local dir; `decide_intent(T, M)` |
+| `nlu/engines/ner_transformer.py` | PhoBERT-family **`AutoModelForTokenClassification`** from local dir; BIO → spans; **raw message** only |
+| `tests/unit/test_intent_transformer_engine.py` | `decide_intent` + mocks |
+| `tests/unit/test_ner_transformer_engine.py` | `offsets_to_spans` + mocks |
+| `tests/unit/test_pipeline_engines.py` | Engine selection + independence |
+| `tests/unit/test_engine_budget.py` | Budget helper |
+| `tests/unit/test_pipeline_long_input.py` | Long-input semantics |
 
 **Optional later:**
 
 | File | Responsibility |
 |------|----------------|
-| `scripts/train_intent_phobert.py` | Fine-tune PhoBERT on `data/intent.csv` → write artifact dir |
-| `scripts/train_ner_phobert.py` | Fine-tune or adapt NER head |
+| `scripts/train_intent_phobert.py` | Fine-tune PhoBERT on `data/intent.csv` → artifact dir (may already exist) |
+| `scripts/train_ner_phobert.py` | Fine-tune **PhoBERT** `AutoModelForTokenClassification` on operator BIO data → artifact dir (optional; see Task 11) |
 
 **Modify:**
 
@@ -98,6 +98,26 @@ Implement **`run_with_budget_ms(budget_ms: int, fn: Callable[[], T], *, on_timeo
 | **Tests** | Unit-test: `fn` sleeps longer than budget → returns `on_timeout`; fast `fn` → returns real result. No real `torch` required for these tests (use `time.sleep` stub). |
 
 NER and intent **both** use this helper so “budget” is not vague.
+
+---
+
+## PhoBERT-based NER artifacts (design `2026-04-03-intent-ner-models-v2-design.md` §Model choices, §NER)
+
+The approved **Entities (neural)** row: **token classification (BIO)** on a **PhoBERT backbone**, via **`AutoModelForTokenClassification` + fast `AutoTokenizer` + `return_offsets_mapping=True`**, running on the **raw current user message** only; **merge** with deterministic pattern/dictionary entities; span **`source="model"`**; **`start`/`end`** are Unicode code point indices into that raw message (see design §NER, §Offset contract).
+
+**Two supported acquisition paths (operator chooses one per deployment):**
+
+| Path | When | Actions |
+|------|------|---------|
+| **A — Community checkpoint** | Fastest path; public labels (e.g. PER/ORG/LOC) suffice | On [HuggingFace Hub](https://huggingface.co/models), find a **`TokenClassification`** model whose config shows a **PhoBERT** encoder (e.g. `vinai/phobert-base` in `config.json` / base model metadata). Run `snapshot_download` or `from_pretrained` + `save_pretrained(local_dir)`. Set **`NLU_NER_MODEL_DIR`** to that directory. Set **`NLU_ENTITY_ENGINE=transformer`**. |
+| **B — Fine-tune on your label set** | Domain labels (e.g. admission-specific types) must match CSV/KB | Prepare a **word- or token-aligned BIO** dataset (same label vocabulary you want at runtime). Fine-tune **from `vinai/phobert-base`** (or `vinai/phobert-large-v2` per latency bake-off) with HF **`AutoModelForTokenClassification`**; export a normal **`save_pretrained` dir**. Point **`NLU_NER_MODEL_DIR`** there. Use **Task 11** script if implemented. |
+
+**Label / merge rules (runtime):**
+
+- `TransformerNerEngine` reads **`model.config.id2label`**; predictions must be **BIO** strings (with **`O`**) so `offsets_to_spans` in `nlu/engines/ner_transformer.py` can merge spans.
+- Community models may use different type names than `entity.json`; **deterministic** extraction still fills gaps. Neural spans **dedupe** with deterministic on `(label, start, end)` in `NLPPipeline._merge_entity_lists`.
+
+**Open design item (not blocking code):** Pin **exact Hub repo id** for Path A after a short eval on Vietnamese admission utterances (design “Exact checkpoint IDs”).
 
 ---
 
@@ -303,29 +323,47 @@ Complete the **Inference budget contract** section above; add `tests/unit/test_e
 
 ---
 
-### Task 5: `TransformerNerEngine` — BIO + offsets on raw message
+### Task 5: `TransformerNerEngine` — PhoBERT-family BIO + offsets on raw message
+
+**Design trace:** `2026-04-03-intent-ner-models-v2-design.md` table row **Entities (neural)** + §**NER** + §**Offset contract**.
 
 **Files:**
 
-- Create/modify: `nlu/engines/ner_transformer.py`
+- Modify (verify): `nlu/engines/ner_transformer.py`
 - Test: `tests/unit/test_ner_transformer_engine.py`
-- Modify: `nlu/pipeline.py`
+- Modify (verify): `nlu/pipeline.py`, `env.example`
 
-- [ ] **Step 1: Pure function tests** for BIO merge (see prior plan’s `offsets_to_spans` example); include Unicode: e.g. `"café"` length / indices.
+**Model artifact expectation:** A directory compatible with:
 
-- [ ] **Step 2: Implement** `TransformerNerEngine.extract(text)`:
+```python
+AutoTokenizer.from_pretrained(path, use_fast=True)
+AutoModelForTokenClassification.from_pretrained(path)
+```
 
-  - Wrap **tokenize + forward + decode to spans** in `run_with_budget_ms(..., budget_ms=get_entity_budget_ms(), on_timeout=[])` so timeout matches design **component-wise** degradation (deterministic entities still returned by pipeline).
+where **`config.json`** defines `id2label` mapping to **BIO** tag strings. **Preferred backbone:** checkpoints trained from **`vinai/phobert-base`** (or **large-v2**) per design §Intent classifier / open questions.
 
-  - **Offsets rule:** `start`/`end` MUST be indices into the **same** string object passed in (`text`). Do not run NER on a prefixed or context-augmented string.
-  - **Truncation rule:** Prefer `tokenizer(text, truncation=True, max_length=min(getattr(tokenizer, "model_max_length", 10**9), getattr(model.config, "max_position_embeddings", 10**9)), return_offsets_mapping=True)` (or equivalent safe cap) so Hugging Face maps spans only to the **substring actually fed to the model**. If the tokenizer truncates, **only emit entities whose character spans lie in the processed prefix**; do not guess offsets for tail content that was dropped. Add unit tests: long string → no entity spans with `end > len(processed_prefix)` (or equivalent invariant).
-  - **Alternative (simpler):** If `len(text)` exceeds a configured `NLU_NER_MAX_CHARS`, skip neural NER (`[]`) and rely on deterministic entities only — document and test.
+- [ ] **Step 1: Pure function tests** for `offsets_to_spans` — BIO merge; Unicode code points (e.g. `"café"` spans).
 
-- [ ] **Step 3: Merge** with `EntityExtractor` outputs: dedupe by `(label, start, end)`; prefer deterministic + model rules in tests.
+- [ ] **Step 2: Artifact smoke test (local dir, no CI network)** — Add a test that builds a **tiny random** `PreTrainedModel` + tokenizer saved to `tmp_path`, loads `TransformerNerEngine(str(tmp_path))`, and asserts `extract("Hi")` returns a list (may be empty) **without** Hub download. Skip if engine already covered.
 
-- [ ] **Step 4: Wire `NLU_ENTITY_ENGINE=transformer|deterministic|off`**
+- [ ] **Step 3: Verify** `TransformerNerEngine.extract` implementation matches design:
 
-- [ ] **Step 5: Commit** — `feat(nlu): PhoBERT NER engine and merge`
+  - **API:** `run_with_budget_ms(..., budget_ms=get_entity_budget_ms(), on_timeout=[])` around forward path.
+  - **Tokenizer:** `return_offsets_mapping=True`, `truncation=True`, `max_length` capped (see `_max_token_length_for_model`).
+  - **Raw message only:** no `ContextProcessor` / intent prefix on NER input.
+  - **Truncation safety:** drop or clip spans so **`end` ≤ processed character prefix** (existing `processed_len` filter in engine).
+  - **`NLU_NER_MAX_CHARS`:** if set, skip neural path for long `text` (`[]`).
+
+- [ ] **Step 4: Verify merge** in `NLPPipeline.extract_entities`: **deterministic** always runs when `mode != off`; **transformer** adds non-overlapping `(label,start,end)` neural spans via `_merge_entity_lists`; neural entities use **`source="model"`**.
+
+- [ ] **Step 5: Operator playbook (docs in `env.example` comment block)** — Document **Path A** (snapshot community PhoBERT NER to `NLU_NER_MODEL_DIR`) and **Path B** (fine-tune; see Task 11). Example env:
+
+```env
+NLU_ENTITY_ENGINE=transformer
+NLU_NER_MODEL_DIR=models/ner/my-phobert-ner-export
+```
+
+- [ ] **Step 6: Commit** (if changes) — `docs(nlu): align NER task with PhoBERT artifact paths`
 
 ---
 
@@ -392,17 +430,71 @@ Per design doc §Two-tier context: add `sticky_entities` dict to session context
 
 ---
 
-### Task 10 (optional): Training script — intent PhoBERT fine-tune
+### Task 10a (optional): Training script — intent PhoBERT fine-tune
 
 **Files:**
 
-- Create: `scripts/train_intent_phobert.py`
+- Verify: `scripts/train_intent_phobert.py` (may already exist)
 
 - [ ] **Step 1:** CLI: `--data data/intent.csv`, `--out models/intent/run1`, `--base vinai/phobert-base`.
 
-- [ ] **Step 2:** Document in `env.example`: point `NLU_INTENT_MODEL_DIR` at exported dir.
+- [ ] **Step 2:** Document in `env.example`: point **`NLU_INTENT_MODEL_DIR`** at exported dir.
 
-- [ ] **Step 3:** Commit — `chore(scripts): add PhoBERT intent training entrypoint`
+- [ ] **Step 3:** Commit — `chore(scripts): document intent training artifact path` (only if docs drift)
+
+---
+
+### Task 11 (optional): Training script — PhoBERT **NER** fine-tune (Path B)
+
+**Goal (design):** Produce a **`save_pretrained`** directory usable as **`NLU_NER_MODEL_DIR`**—same contract as **§PhoBERT-based NER artifacts** (BIO + `id2label` + fast tokenizer).
+
+**Files:**
+
+- Create: `scripts/train_ner_phobert.py`
+- Create: `data/ner/README.md` (or comment in `env.example`) describing the **input format**
+- Modify: `env.example` — NER training vars / example paths
+
+- [ ] **Step 1: Choose on-disk training format (YAGNI)** — Use **JSON Lines**: one object per line, word-segmented:
+
+```json
+{"tokens": ["Đại", "học", "Xây", "dựng"], "ner_tags": ["B-ORG", "I-ORG", "I-ORG", "I-ORG"]}
+```
+
+Require: `len(tokens) == len(ner_tags)`; tags are **BIO**; include **`O`**.
+
+- [ ] **Step 2: Failing smoke (optional)** — `tests/unit/test_train_ner_data_loader.py`: load two lines from a temp file; assert label set builds `label2id` / `id2label` with **`O` first** (typical HF convention):
+
+```python
+def test_ner_label_maps_include_o_first(tmp_path):
+    p = tmp_path / "sample.jsonl"
+    p.write_text(
+        '{"tokens":["a","b"],"ner_tags":["B-X","O"]}\n'
+        '{"tokens":["c"],"ner_tags":["O"]}\n',
+        encoding="utf-8",
+    )
+    # import helper from scripts.train_ner_phobert or nlu.train.ner_data
+    label2id, id2label = build_label_maps(p)
+    assert id2label[0] == "O"
+```
+
+Implement **`build_label_maps`** in the script module (or `nlu/datasets/ner_jsonl.py` if you want importability).
+
+- [ ] **Step 3: Implement `train_ner_phobert.py`** (mirror patterns from `scripts/train_intent_phobert.py`: `load_dotenv`, `TRAIN_*`-style env or CLI flags, GPU-friendly `DataLoader`, optional AMP).
+
+  - Args: `--data` (jsonl path), `--out`, `--base` (default `vinai/phobert-base`), `--epochs`, `--batch-size`, `--lr`, `--max-len`.
+  - Use **`AutoTokenizer.from_pretrained(base, use_fast=True)`** and **`AutoModelForTokenClassification.from_pretrained(base, num_labels=len(labels), id2label=..., label2id=...)`**.
+  - **Subword alignment:** tokenize with `is_split_into_words=True` (word-level labels → subword label IDs; use `-100` for special/pad subwords in `labels` tensor per HF token classification docs).
+  - Save: `model.save_pretrained(out)` + `tokenizer.save_pretrained(out)`.
+
+- [ ] **Step 4: Manual run (developer machine, GPU)** —
+
+```powershell
+pwsh -NoProfile -Command "cd 'c:\Users\ngoqh\Projects\nlp-chatbot'; uv run python scripts/train_ner_phobert.py --data data/ner/train.jsonl --out models/ner/run1"
+```
+
+Expect: directory `models/ner/run1` loads in `TransformerNerEngine`.
+
+- [ ] **Step 5: Commit** — `feat(scripts): add PhoBERT NER fine-tune entrypoint`
 
 ---
 

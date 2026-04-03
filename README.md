@@ -45,7 +45,8 @@ nlp-chatbot/
 ├── services/               # NLP facade, CSV handlers, processors
 ├── data/                   # CSV knowledge base
 ├── scripts/
-│   └── train_intent_phobert.py   # Optional PhoBERT intent fine-tune
+│   ├── train_intent_phobert.py   # Optional PhoBERT intent fine-tune
+│   └── train_ner_phobert.py      # Optional PhoBERT BIO NER fine-tune (JSON Lines)
 ├── frontend/               # Reflex app (optional)
 ├── tests/
 │   ├── unit/

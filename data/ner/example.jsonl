@@ -1,0 +1,2 @@
+{"tokens": ["Ngành", "Kiến", "trúc", "năm", "2024"], "ner_tags": ["B-TEN_NGANH", "I-TEN_NGANH", "I-TEN_NGANH", "O", "B-NAM"]}
+{"tokens": ["Điểm", "chuẩn", "là", "bao", "nhiêu"], "ner_tags": ["O", "O", "O", "O", "O"]}
