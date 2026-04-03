@@ -15,6 +15,8 @@ ENTITY_INFERENCE_BUDGET_MS_DEFAULT: int = 400
 CONTEXT_MAX_CHARS_DEFAULT: int = 4000
 CONTEXT_TURNS_FOR_MODEL_DEFAULT: int = 5
 
+NLU_INTENT_MAX_CHARS_DEFAULT: int = 0  # 0 = disabled (no extra cap)
+
 SERVER_HOST_DEFAULT: str = "0.0.0.0"
 SERVER_PORT_DEFAULT: int = 8000
 DEBUG_DEFAULT: bool = False
@@ -61,11 +63,23 @@ def get_intent_threshold_T() -> float:
 
 
 def get_intent_budget_ms() -> int:
-    return int(os.getenv("INTENT_INFERENCE_BUDGET_MS", INTENT_INFERENCE_BUDGET_MS_DEFAULT))
+    # Prefer design-aligned env var names; keep older names as fallback.
+    return int(
+        os.getenv(
+            "NLU_INTENT_BUDGET_MS",
+            os.getenv("INTENT_INFERENCE_BUDGET_MS", INTENT_INFERENCE_BUDGET_MS_DEFAULT),
+        )
+    )
 
 
 def get_entity_budget_ms() -> int:
-    return int(os.getenv("ENTITY_INFERENCE_BUDGET_MS", ENTITY_INFERENCE_BUDGET_MS_DEFAULT))
+    # Prefer design-aligned env var names; keep older names as fallback.
+    return int(
+        os.getenv(
+            "NLU_ENTITY_BUDGET_MS",
+            os.getenv("ENTITY_INFERENCE_BUDGET_MS", ENTITY_INFERENCE_BUDGET_MS_DEFAULT),
+        )
+    )
 
 
 def get_context_max_chars() -> int:
@@ -111,3 +125,39 @@ def get_max_results() -> int:
 
 def get_max_suggestions() -> int:
     return int(os.getenv("MAX_SUGGESTIONS", MAX_SUGGESTIONS_DEFAULT))
+
+
+def get_intent_model_path() -> str:
+    # Canonical env var is NLU_INTENT_MODEL_DIR; INTENT_MODEL_PATH is a legacy alias.
+    return os.getenv("NLU_INTENT_MODEL_DIR", os.getenv("INTENT_MODEL_PATH", "")).strip()
+
+
+def get_ner_model_path() -> str:
+    # Canonical env var is NLU_NER_MODEL_DIR; NER_MODEL_PATH is a legacy alias.
+    return os.getenv("NLU_NER_MODEL_DIR", os.getenv("NER_MODEL_PATH", "")).strip()
+
+
+def get_nlu_intent_max_chars() -> int:
+    # 0 = disabled
+    return int(os.getenv("NLU_INTENT_MAX_CHARS", NLU_INTENT_MAX_CHARS_DEFAULT))
+
+
+def get_nlu_device() -> str:
+    value = os.getenv("NLU_DEVICE", "").strip().lower()
+    if value:
+        return "cuda" if value == "cuda" else "cpu"
+
+    # Import torch lazily to avoid import cost at module load.
+    try:
+        import torch  # type: ignore
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
+def get_nlu_use_autocast() -> bool:
+    raw = os.getenv("NLU_AUTOCAST", "").strip().lower()
+    if raw:
+        return raw in ("true", "1", "yes", "on")
+    return get_nlu_device() == "cuda"
