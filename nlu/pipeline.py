@@ -30,6 +30,7 @@ from config import (
     get_context_max_chars,
     get_context_turns_for_model,
     get_intent_margin_M,
+    get_intent_model_path,
     get_intent_threshold,
     get_nlu_intent_engine,
 )
@@ -86,7 +87,16 @@ class NLPPipeline:
         self._intent_engine_mode = get_nlu_intent_engine()
         self._intent_engine: Optional[IntentEngine] = None
         if self._intent_engine_mode == "transformer":
-            self._intent_engine = PlaceholderTransformerIntentEngine()
+            model_path = get_intent_model_path()
+            if model_path and os.path.isdir(model_path):
+                try:
+                    from .engines.intent_transformer import TransformerIntentEngine
+
+                    self._intent_engine = TransformerIntentEngine(model_path)
+                except Exception:
+                    self._intent_engine = PlaceholderTransformerIntentEngine()
+            else:
+                self._intent_engine = PlaceholderTransformerIntentEngine()
         elif (
             self._intent_detector is not None
             and LegacyTfidfIntentEngine is not None
