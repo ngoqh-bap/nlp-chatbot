@@ -3,6 +3,20 @@ from typing import Dict, List, Tuple
 
 from .preprocess import tokenize_and_map
 
+
+class LegacyTfidfIntentEngine:
+    """Adapter exposing `IntentDetector` through the `IntentEngine` protocol."""
+
+    __slots__ = ("_detector",)
+
+    def __init__(self, detector: "IntentDetector") -> None:
+        self._detector = detector
+
+    def detect(
+        self, text: str, synonym_map: Dict[str, str], normalize_for_kw_fn
+    ) -> Tuple[str, float]:
+        return self._detector.detect(text, synonym_map, normalize_for_kw_fn)
+
 DEFAULT_INTENT_THRESHOLD = 0.3
 DEFAULT_INTENT_MARGIN = 0.0
 # Many intent labels: low temperature sharpens softmax so top-1 probability stays meaningful.

@@ -10,9 +10,10 @@ except ImportError:
     ext_tokenize_and_map = None
 
 try:
-    from .intent import IntentDetector
+    from .intent import IntentDetector, LegacyTfidfIntentEngine
 except ImportError:
     IntentDetector = None
+    LegacyTfidfIntentEngine = None
 
 try:
     from .context import ContextProcessor
@@ -30,7 +31,10 @@ from config import (
     get_context_turns_for_model,
     get_intent_margin_M,
     get_intent_threshold,
+    get_nlu_intent_engine,
 )
+
+from .engines.base import IntentEngine
 
 DEFAULT_INTENT_THRESHOLD = get_intent_threshold()
 
@@ -79,6 +83,13 @@ class NLPPipeline:
             )
             if IntentDetector is not None else None
         )
+        self._intent_engine_mode = get_nlu_intent_engine()
+        # Task 4: when _intent_engine_mode == "transformer", swap in the PhoBERT intent engine.
+        self._intent_engine: Optional[IntentEngine] = (
+            LegacyTfidfIntentEngine(self._intent_detector)
+            if self._intent_detector is not None and LegacyTfidfIntentEngine is not None
+            else None
+        )
         self._entity_extractor: Optional[EntityExtractor] = (
             EntityExtractor(self.data_dir, os.path.join(data_dir, "entity.json"), self.syn_map)
             if EntityExtractor is not None else None
@@ -108,9 +119,9 @@ class NLPPipeline:
         return intent_to_samples
 
     def detect_intent(self, text: str) -> Tuple[str, float]:
-        if self._intent_detector is None:
+        if self._intent_engine is None:
             return "fallback", 0.0
-        return self._intent_detector.detect(text, self.syn_map, _normalize_text)
+        return self._intent_engine.detect(text, self.syn_map, _normalize_text)
 
     def extract_entities(self, text: str) -> List[Dict[str, Any]]:
         if self._entity_extractor is None:
@@ -129,8 +140,8 @@ class NLPPipeline:
         else:
             intent_input = text
         intent, score = (
-            self._intent_detector.detect(intent_input, self.syn_map, _normalize_text)
-            if self._intent_detector is not None
+            self._intent_engine.detect(intent_input, self.syn_map, _normalize_text)
+            if self._intent_engine is not None
             else ("fallback", 0.0)
         )
         entities = self.extract_entities(text)
