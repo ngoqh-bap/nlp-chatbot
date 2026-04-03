@@ -44,11 +44,10 @@ class NLPService:
     def handle_message(self, message: str, current_context: Dict[str, Any]) -> Dict[str, Any]:
         from services import csv_service as csvs
 
-        analysis = self.pipeline.analyze(message)
+        analysis = self.pipeline.analyze_with_context(message, current_context)
 
         if analysis["intent"] == "fallback" or analysis["score"] < self.intent_threshold:
             response = csvs.handle_fallback_query(message, current_context)
-            analysis["intent"] = "fallback_response"
         else:
             response = csvs.handle_intent_query(analysis, current_context, message)
 

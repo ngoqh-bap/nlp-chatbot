@@ -82,3 +82,9 @@ class TestIntentClassification:
                 f"Empty message should fallback: '{msg}'"
             assert result["score"] == 0.0, \
                 f"Empty message should have 0 confidence"
+
+
+def test_pipeline_constructs_intent_detector_without_type_error():
+    from nlu.pipeline import NLPPipeline
+
+    NLPPipeline()

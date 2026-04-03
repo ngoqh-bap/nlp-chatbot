@@ -4,6 +4,20 @@ from typing import Dict, List, Tuple
 from .preprocess import tokenize_and_map
 
 DEFAULT_INTENT_THRESHOLD = 0.3
+DEFAULT_INTENT_MARGIN = 0.0
+# Many intent labels: low temperature sharpens softmax so top-1 probability stays meaningful.
+LEGACY_SOFTMAX_TEMPERATURE = 0.12
+
+
+def _softmax(values: List[float], temperature: float) -> List[float]:
+    if not values:
+        return []
+    t = temperature if temperature > 1e-9 else 1e-9
+    scaled = [v / t for v in values]
+    m = max(scaled)
+    exps = [math.exp(s - m) for s in scaled]
+    s = sum(exps) or 1.0
+    return [e / s for e in exps]
 
 
 def _compute_idf(samples: List[List[str]]) -> Dict[str, float]:
@@ -54,16 +68,18 @@ def _cosine(a: Dict[str, float], b: Dict[str, float]) -> float:
 
 class IntentDetector:
     def __init__(
-            self,
-            intent_samples: Dict[str, List[List[str]]],
-            intent_keyword_backoff: Dict[str, str],
-            threshold: float = DEFAULT_INTENT_THRESHOLD,
+        self,
+        intent_samples: Dict[str, List[List[str]]],
+        threshold: float = DEFAULT_INTENT_THRESHOLD,
+        margin_m: float = DEFAULT_INTENT_MARGIN,
     ) -> None:
         self.intent_samples = intent_samples
         self.threshold = threshold
+        self.margin_m = margin_m
 
         self.idf: Dict[str, float] = {}
         self.intent_centroids: Dict[str, Dict[str, float]] = {}
+        self._intent_order: List[str] = []
         self._build_intent_centroids()
 
     def _tfidf_vec(self, toks: List[str]) -> Dict[str, float]:
@@ -85,23 +101,34 @@ class IntentDetector:
             centroids[intent] = _centroid(vecs) if vecs else {}
 
         self.intent_centroids = centroids
+        self._intent_order = list(self.intent_centroids.keys())
 
     def detect(
             self, text: str, synonym_map: Dict[str, str], normalize_for_kw_fn
     ) -> Tuple[str, float]:
+        if not (text or "").strip():
+            return "fallback", 0.0
+
         q_tokens = tokenize_and_map(text, synonym_map)
+        if not q_tokens:
+            return "fallback", 0.0
+
         q_vec = self._tfidf_vec(q_tokens)
 
-        best_intent = ""
-        best_score = 0.0
-        for intent, centroid in self.intent_centroids.items():
-            score = (
-                    _cosine(q_vec, centroid)
-            )
-            if score > best_score:
-                best_score = score
-                best_intent = intent
+        if not self._intent_order:
+            return "fallback", 0.0
 
-        if best_intent and best_score >= self.threshold:
-            return best_intent, best_score
-        return "fallback", best_score
+        similarities = [
+            _cosine(q_vec, self.intent_centroids[i]) for i in self._intent_order
+        ]
+        probs = _softmax(similarities, LEGACY_SOFTMAX_TEMPERATURE)
+        ranked = sorted(
+            zip(self._intent_order, probs),
+            key=lambda x: -x[1],
+        )
+        top1_label, top1 = ranked[0]
+        top2 = ranked[1][1] if len(ranked) > 1 else 0.0
+
+        if top1 < self.threshold or (top1 - top2) < self.margin_m:
+            return "fallback", top1
+        return top1_label, top1

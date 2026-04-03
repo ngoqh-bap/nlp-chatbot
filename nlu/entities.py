@@ -5,10 +5,19 @@ from typing import Any, Dict, List, Set, Tuple, Optional
 
 from .preprocess import normalize_text
 
-try:
-    from underthesea import ner as uts_ner  # type: ignore
-except ImportError:
-    uts_ner = None  # type: ignore
+uts_ner = None  # optional underthesea NER removed; use model/deterministic extraction only
+
+
+def _span_in_original(text: str, surface: str) -> Optional[Tuple[int, int]]:
+    """Return [start, end) Unicode indices of `surface` in `text`, or None."""
+    if not surface:
+        return None
+    t = text.casefold()
+    s = surface.casefold()
+    start = t.find(s)
+    if start < 0:
+        return None
+    return start, start + len(surface)
 
 
 def _load_entity_patterns(path: str) -> List[Tuple[str, str]]:
@@ -435,6 +444,11 @@ class EntityExtractor:
             if "điểm chuẩn" in norm_t:
                 canon_label = "DIEM_CHUAN"
 
+            span = _span_in_original(text, raw_text)
+            if span is None:
+                continue
+            start, end = span
+
             key = (canon_label, norm_t)
             if key not in seen:
                 seen.add(key)
@@ -442,6 +456,8 @@ class EntityExtractor:
                     {
                         "label": canon_label,
                         "text": raw_text,
+                        "start": start,
+                        "end": end,
                         "source": ent.get("source"),
                     }
                 )

@@ -3,13 +3,6 @@ from typing import Dict, List, Set
 
 import unicodedata
 
-try:
-    from underthesea import word_tokenize
-except ImportError:
-
-    def word_tokenize(text: str):
-        return text.split()
-
 VI_STOPWORDS: Set[str] = {
     "là",
     "làm",
@@ -66,12 +59,7 @@ def normalize_text(text) -> str:
 
 def tokenize_and_map(text: str, synonym_map: Dict[str, str]) -> List[str]:
     norm = normalize_text(text)
-
-    try:
-        raw = word_tokenize(norm)
-        toks = raw.split()
-    except (ValueError, TypeError, AttributeError):
-        toks = norm.split()
+    toks = norm.split()
 
     mapped = [synonym_map.get(tok, tok) for tok in toks]
 

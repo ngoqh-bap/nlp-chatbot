@@ -159,7 +159,7 @@ class TestEntityExtraction:
         # Each entity should have source
         for entity in entities:
             assert "source" in entity, "Entity should have source field"
-            assert entity["source"] in ["pattern", "dictionary", "ner"], \
+            assert entity["source"] in ["pattern", "dictionary", "ner", "model"], \
                 f"Invalid entity source: {entity['source']}"
 
 

@@ -3,17 +3,6 @@ import os
 from typing import List, Dict, Tuple, Any, Optional
 
 try:
-    from underthesea import word_tokenize
-except ImportError:
-    def word_tokenize(text: str):
-        return text.split()
-
-try:
-    from underthesea import ner as uts_ner
-except ImportError:
-    uts_ner = None
-
-try:
     from .preprocess import normalize_text as ext_normalize_text
     from .preprocess import tokenize_and_map as ext_tokenize_and_map
 except ImportError:
@@ -26,11 +15,22 @@ except ImportError:
     IntentDetector = None
 
 try:
+    from .context import ContextProcessor
+except ImportError:
+    ContextProcessor = None
+
+try:
     from .entities import EntityExtractor
 except ImportError:
     EntityExtractor = None
 
-from config import DATA_DIR, get_intent_threshold
+from config import (
+    DATA_DIR,
+    get_context_max_chars,
+    get_context_turns_for_model,
+    get_intent_margin_M,
+    get_intent_threshold,
+)
 
 DEFAULT_INTENT_THRESHOLD = get_intent_threshold()
 
@@ -72,12 +72,23 @@ class NLPPipeline:
 
 
         self._intent_detector: Optional[IntentDetector] = (
-            IntentDetector(self.intent_samples, self.intent_threshold)
+            IntentDetector(
+                self.intent_samples,
+                self.intent_threshold,
+                margin_m=get_intent_margin_M(),
+            )
             if IntentDetector is not None else None
         )
         self._entity_extractor: Optional[EntityExtractor] = (
             EntityExtractor(self.data_dir, os.path.join(data_dir, "entity.json"), self.syn_map)
             if EntityExtractor is not None else None
+        )
+        self._context_processor: Optional[ContextProcessor] = (
+            ContextProcessor(
+                max_chars=get_context_max_chars(),
+                turns_for_model=get_context_turns_for_model(),
+            )
+            if ContextProcessor is not None else None
         )
 
     def _load_intent_samples(self, path: str) -> Dict[str, List[List[str]]]:
@@ -107,7 +118,20 @@ class NLPPipeline:
         return self._entity_extractor.extract(text)
 
     def analyze(self, text: str) -> Dict[str, Any]:
-        intent, score = self.detect_intent(text)
-        entities = self.extract_entities(text)
+        return self.analyze_with_context(text, {})
 
+    def analyze_with_context(
+        self, text: str, current_context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        ctx = current_context if current_context is not None else {}
+        if self._context_processor is not None:
+            intent_input = self._context_processor.build_intent_input(text, ctx)
+        else:
+            intent_input = text
+        intent, score = (
+            self._intent_detector.detect(intent_input, self.syn_map, _normalize_text)
+            if self._intent_detector is not None
+            else ("fallback", 0.0)
+        )
+        entities = self.extract_entities(text)
         return {"intent": intent, "score": score, "entities": entities}

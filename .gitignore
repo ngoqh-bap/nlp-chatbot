@@ -27,6 +27,9 @@ ENV/
 env/
 
 # IDE
+.cursor/
+.specify/
+.github/
 .vscode/
 .idea/
 *.swp

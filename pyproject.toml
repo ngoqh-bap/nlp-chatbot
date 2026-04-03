@@ -8,9 +8,9 @@ dependencies = [
     "fastapi==0.122.0",
     # Backend - Uvicorn server - ASGI server
     "uvicorn[standard]==0.38.0",
-    # Backend - NLP - Underthesea cho tokenization tiếng Việt
-    "underthesea==8.3.0",
-    # Silences SyntaxWarnings from underthesea when running server/tests
+    # Backend - NLP - model inference (intent/NER engines)
+    "transformers>=4.45.0",
+    "torch>=2.4.0",
     "python-dotenv>=1.0.0",
     # Backend - Utilities - Regex cho text processing
     "regex==2025.11.3",

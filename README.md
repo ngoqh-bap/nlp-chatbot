@@ -14,8 +14,8 @@
 
 ### NLP Tiếng Việt
 
-- ✅ Intent detection (TF-IDF + Cosine)
-- ✅ Entity extraction (pattern + dictionary)
+- ✅ Intent detection (legacy TF‑IDF + softmax probabilities; optional `transformers` path planned)
+- ✅ Entity extraction (pattern + dictionary + spans)
 - ✅ Context management (nhớ 10 câu hỏi gần nhất)
 - ✅ Fallback thông minh khi không hiểu
 
@@ -33,8 +33,8 @@
 ### Backend
 
 - **FastAPI** - Web framework
-- **Underthesea** - Vietnamese NLP
-- **scikit-learn** - TF-IDF, Cosine Similarity
+- **Transformers + PyTorch** - optional model-based NLP
+- **Deterministic tokenization** - Vietnamese text normalization
 - **Pydantic** - Data validation
 - **pytest** - Testing framework
 - **pandas** - CSV processing
