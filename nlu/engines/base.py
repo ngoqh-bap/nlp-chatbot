@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List, Protocol, Tuple, runtime_checkable
 
 IntentResult = Tuple[str, float]
 
-NormalizeFn = Callable[..., str]
+NormalizeFn = Callable[[str], str]
 
 
 @runtime_checkable
@@ -19,3 +19,13 @@ class IntentEngine(Protocol):
 class NerEngine(Protocol):
     def extract(self, text: str) -> List[Dict[str, Any]]:
         ...
+
+
+class PlaceholderTransformerIntentEngine:
+    """Task 4 replaces this: transformer mode without a loaded model behaves like missing artifact."""
+
+    def detect(
+        self, text: str, synonym_map: Dict[str, str], normalize_for_kw_fn: NormalizeFn
+    ) -> IntentResult:
+        _ = (text, synonym_map, normalize_for_kw_fn)
+        return "fallback", 0.0

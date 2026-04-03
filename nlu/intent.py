@@ -1,6 +1,7 @@
 import math
 from typing import Dict, List, Tuple
 
+from .engines.base import NormalizeFn
 from .preprocess import tokenize_and_map
 
 
@@ -13,7 +14,7 @@ class LegacyTfidfIntentEngine:
         self._detector = detector
 
     def detect(
-        self, text: str, synonym_map: Dict[str, str], normalize_for_kw_fn
+        self, text: str, synonym_map: Dict[str, str], normalize_for_kw_fn: NormalizeFn
     ) -> Tuple[str, float]:
         return self._detector.detect(text, synonym_map, normalize_for_kw_fn)
 
@@ -118,7 +119,7 @@ class IntentDetector:
         self._intent_order = list(self.intent_centroids.keys())
 
     def detect(
-            self, text: str, synonym_map: Dict[str, str], normalize_for_kw_fn
+        self, text: str, synonym_map: Dict[str, str], normalize_for_kw_fn: NormalizeFn
     ) -> Tuple[str, float]:
         if not (text or "").strip():
             return "fallback", 0.0

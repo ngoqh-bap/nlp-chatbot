@@ -1,3 +1,8 @@
-from .base import IntentEngine, IntentResult, NerEngine
+from .base import IntentEngine, IntentResult, NerEngine, PlaceholderTransformerIntentEngine
 
-__all__ = ["IntentEngine", "IntentResult", "NerEngine"]
+__all__ = [
+    "IntentEngine",
+    "IntentResult",
+    "NerEngine",
+    "PlaceholderTransformerIntentEngine",
+]

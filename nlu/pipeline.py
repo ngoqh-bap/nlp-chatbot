@@ -34,7 +34,7 @@ from config import (
     get_nlu_intent_engine,
 )
 
-from .engines.base import IntentEngine
+from .engines.base import IntentEngine, PlaceholderTransformerIntentEngine
 
 DEFAULT_INTENT_THRESHOLD = get_intent_threshold()
 
@@ -84,12 +84,14 @@ class NLPPipeline:
             if IntentDetector is not None else None
         )
         self._intent_engine_mode = get_nlu_intent_engine()
-        # Task 4: when _intent_engine_mode == "transformer", swap in the PhoBERT intent engine.
-        self._intent_engine: Optional[IntentEngine] = (
-            LegacyTfidfIntentEngine(self._intent_detector)
-            if self._intent_detector is not None and LegacyTfidfIntentEngine is not None
-            else None
-        )
+        self._intent_engine: Optional[IntentEngine] = None
+        if self._intent_engine_mode == "transformer":
+            self._intent_engine = PlaceholderTransformerIntentEngine()
+        elif (
+            self._intent_detector is not None
+            and LegacyTfidfIntentEngine is not None
+        ):
+            self._intent_engine = LegacyTfidfIntentEngine(self._intent_detector)
         self._entity_extractor: Optional[EntityExtractor] = (
             EntityExtractor(self.data_dir, os.path.join(data_dir, "entity.json"), self.syn_map)
             if EntityExtractor is not None else None
